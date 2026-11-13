@@ -49,7 +49,7 @@
     @apply w-full max-w-md rounded-2xl bg-slate-950/85 border border-white/10 shadow-2xl shadow-black/60 p-6;
   }
   .deco-item {
-    @apply flex flex-col items-center justify-center gap-1 w-[4.2rem] h-[3.9rem] rounded-xl bg-white/5 border border-white/10
+    @apply shrink-0 flex flex-col items-center justify-center gap-1 w-[4.2rem] h-[3.9rem] rounded-xl bg-white/5 border border-white/10
            text-[11px] text-white/70 hover:bg-white/10 transition active:scale-95;
   }
   .deco-item.is-on { @apply border-amber-300/60 bg-amber-400/15 text-amber-50; }
@@ -173,8 +173,8 @@
 <!-- Bandeja de decoración -->
 <div id="decorTray" class="hide-in-cine hidden fixed bottom-4 md:bottom-6 left-1/2 -translate-x-1/2 w-[calc(100%-1.5rem)] md:w-max z-30">
   <div class="rounded-2xl bg-slate-900/55 backdrop-blur-xl border border-white/10 p-3 shadow-2xl shadow-black/50">
-    <p class="text-xs text-white/60 mb-2.5 text-center">Elige un adorno y toca el árbol para colocarlo</p>
-    <div id="decorItems" class="flex flex-wrap gap-2 justify-center"></div>
+    <p class="text-xs text-white/60 mb-2.5 text-center">Elige un adorno y toca el árbol para colgarlo</p>
+    <div id="decorItems" class="flex gap-2 md:justify-center overflow-x-auto md:overflow-visible pb-1 scroll-thin"></div>
     <div class="flex gap-2 justify-center mt-3">
       <button id="decorUndo" class="btn">Deshacer</button>
       <button id="decorClear" class="btn">Quitar todo</button>
@@ -1475,7 +1475,7 @@ function updateSleigh(dt, t) {
 const decorGroup = new THREE.Group();
 scene.add(decorGroup);
 const hitCone = new THREE.Mesh(
-  new THREE.ConeGeometry(R * 0.92, H, 48, 1, true),
+  new THREE.ConeGeometry(R * 1.15, H * 1.04, 48, 1, true),
   new THREE.MeshBasicMaterial({ visible: false })
 );
 hitCone.position.y = BASE + H / 2;
@@ -1532,10 +1532,10 @@ function makeDeco(type, ghost = false) {
   const colors = { red: '#c8102e', gold: '#d4af37', blue: '#1f4fd1', silver: '#e6ecf3' };
   if (colors[type]) {
     const s = new THREE.Mesh(decoGeo.sphere, M({ color: colors[type], metalness: 0.9, roughness: 0.15, envMapIntensity: 1.5 }));
-    s.scale.setScalar(0.19);
-    s.position.z = 0.17;
+    s.scale.setScalar(0.22);
+    s.position.z = 0.2;
     const cap = new THREE.Mesh(decoGeo.cap, goldM);
-    cap.position.set(0, 0.2, 0.17);
+    cap.position.set(0, 0.23, 0.2);
     g.add(s, cap);
   } else if (type === 'bow') {
     const rib = M({ color: '#c8102e', metalness: 0.35, roughness: 0.35 });
@@ -1576,11 +1576,36 @@ function makeDeco(type, ghost = false) {
   return g;
 }
 let decorList = [];
+const DECO_SCALE = 1.25;
+// Lleva el punto tocado a la superficie visible del árbol
+function treeSurface(hit) {
+  const t = Math.min(Math.max((hit.y - BASE) / H, 0.03), 0.93);
+  const dir = new THREE.Vector2(hit.x, hit.z);
+  if (dir.lengthSq() < 1e-6) dir.set(0, 1);
+  dir.normalize();
+  const r = R * (1 - t) * 0.98 + 0.06;
+  return [dir.x * r, BASE + t * H, dir.y * r];
+}
+const DECO_COLORS = { red: '#c8102e', gold: '#d4af37', blue: '#1f4fd1', silver: '#e6ecf3', bow: '#c8102e', cane: '#ffffff', bell: '#d4af37', star: '#ffd27a', light: '#ffc061' };
+function chime() {
+  const fx = ensureSfx();
+  if (!fx) return;
+  const { ctx } = fx;
+  const t = ctx.currentTime;
+  [1318.5, 1975.5].forEach((f, i) => {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t + i * 0.06);
+    g.gain.exponentialRampToValueAtTime(0.12, t + i * 0.06 + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.06 + 0.6);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(t + i * 0.06); o.stop(t + i * 0.06 + 0.65);
+  });
+}
 function placeDeco(type, p, save = true) {
   const obj = makeDeco(type);
-  const nrm = new THREE.Vector3(p[0], 0, p[2]).normalize();
   obj.position.set(p[0], p[1], p[2]);
-  obj.lookAt(p[0] + nrm.x, p[1], p[2] + nrm.z);
+  obj.lookAt(p[0] * 2, p[1], p[2] * 2);
   obj.userData.born = U.uTime.value;
   decorGroup.add(obj);
   decorList.push({ type, p, obj });
@@ -1831,11 +1856,14 @@ canvas.addEventListener('pointerup', (e) => {
   if (state.cine) { setCine(false); return; }
   setNdc(e);
   if (state.decorating) {
-    const p = hitTree();
-    if (p) {
-      const nrm = new THREE.Vector3(p.x, 0, p.z).normalize().multiplyScalar(0.04);
-      placeDeco(state.decoType, [p.x + nrm.x, p.y, p.z + nrm.z]);
-    }
+    if (U.uW.value.x < 0.6 || U.uMix.value < 0.97) { toast('Espera un momento, el árbol se está armando…', 1800); return; }
+    const hit = hitTree();
+    if (!hit) { toast('Toca justo sobre el árbol 🎄', 1600); return; }
+    const pos = treeSurface(hit);
+    placeDeco(state.decoType, pos);
+    sparkBurst(new THREE.Vector3(...pos), new THREE.Color(DECO_COLORS[state.decoType] || '#ffd27a'), 35);
+    chime();
+    if (decorList.length === 1) toast('¡Adorno colgado! Sigue decorando o presiona “Listo”', 2600);
     return;
   }
   const w = pickWish();
@@ -1858,13 +1886,14 @@ canvas.addEventListener('pointermove', (e) => {
     if (!lastMove || downInfo) return;
     setNdc(lastMove);
     if (state.decorating) {
-      const p = hitTree();
+      const hit = hitTree();
       if (preview) {
-        preview.visible = !!p;
-        if (p) {
-          const nrm = new THREE.Vector3(p.x, 0, p.z).normalize();
-          preview.position.set(p.x + nrm.x * 0.04, p.y, p.z + nrm.z * 0.04);
-          preview.lookAt(preview.position.x + nrm.x, p.y, preview.position.z + nrm.z);
+        preview.visible = !!hit;
+        if (hit) {
+          const q = treeSurface(hit);
+          preview.position.set(q[0], q[1], q[2]);
+          preview.lookAt(q[0] * 2, q[1], q[2] * 2);
+          preview.scale.setScalar(DECO_SCALE);
         }
       }
       return;
@@ -1911,6 +1940,7 @@ const clock = new THREE.Clock();
 let mix = 0, mixTarget = 1, firstFrame = true;
 let fpsFrames = 0, fpsTime = 0, fpsGood = 0, lastQChange = 0;
 let nextAutoShow = 0;
+let decorCam = null;
 
 function lerpV(cur, tgt, k) { cur.lerp(tgt, k); }
 
@@ -1985,7 +2015,7 @@ function tick() {
   decorGroup.visible = W.x > 0.6 && mix > 0.97;
   for (const d of decorList) {
     const age = t - d.obj.userData.born;
-    d.obj.scale.setScalar(age < 0.6 ? smooth(age / 0.6) * (1 + 0.3 * Math.sin(age * 10) * (1 - age / 0.6)) : 1);
+    d.obj.scale.setScalar(DECO_SCALE * (age < 0.6 ? smooth(age / 0.6) * (1 + 0.3 * Math.sin(age * 10) * (1 - age / 0.6)) : 1));
   }
 
   // Estrella y luces
@@ -2028,6 +2058,11 @@ function tick() {
     camera.lookAt(cineLook);
     U.uFocus.value = camera.position.distanceTo(cineLook);
   } else {
+    if (decorCam) {
+      decorCam.t = Math.min(1, decorCam.t + dt / 1.2);
+      camera.position.lerpVectors(decorCam.from, decorCam.to, smooth(decorCam.t));
+      if (decorCam.t >= 1) decorCam = null;
+    }
     controls.update();
     U.uFocus.value = camera.position.distanceTo(controls.target);
   }
@@ -2164,6 +2199,7 @@ function setDecorating(on) {
   if (on) {
     if (state.shape !== 0) setShape(0);
     if (mixTarget < 0.5) $('btnAssemble').click();
+    decorCam = { t: 0, from: camera.position.clone(), to: camera.position.clone().sub(controls.target).setLength(12).add(controls.target) };
     renderDecorItems();
     toast('Elige un adorno y toca el árbol para colgarlo');
   }
